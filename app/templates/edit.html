@@ -13,6 +13,7 @@
 
 <form method="post" action="/rows/{{ row.id }}/save" id="adjust">
   <input type="hidden" name="version" value="{{ version }}">
+  <input type="hidden" name="data_rev" value="{{ data_rev }}">
 
   <fieldset {% if start_clipped %}disabled{% endif %}>
     <legend>成片起点（ms）</legend>

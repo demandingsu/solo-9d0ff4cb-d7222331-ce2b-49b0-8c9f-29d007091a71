@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}页面已过期{% endblock %}
+{% block content %}
+<h1>页面数据已过期</h1>
+<div class="banner err">{{ err }}</div>
+<p class="hint">
+  选段或原片字幕在您打开本页后已整体更换，旧页面上的成片行编号与时间轴均已失效，
+  本次保存未写入任何数据。请刷新成片字幕行列表后，在新的成片行上重新校时。
+</p>
+<p>
+  <a class="btn" href="/rows">刷新成片字幕行</a>
+  <a class="btn" href="/upload">前往上传页</a>
+</p>
+{% endblock %}

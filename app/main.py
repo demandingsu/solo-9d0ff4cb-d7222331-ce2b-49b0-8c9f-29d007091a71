@@ -89,6 +89,7 @@ def save_row(
     request: Request,
     row_id: int,
     version: int = Form(...),
+    data_rev: int = Form(-1),
     final_start_ms: str = Form(""),
     final_end_ms: str = Form(""),
 ):
@@ -108,16 +109,25 @@ def save_row(
         new_start = parse_opt(final_start_ms, "成片起点")
         new_end = parse_opt(final_end_ms, "成片终点")
         with db.transaction() as conn:
-            result = logic.adjust_row(conn, row_id, new_start, new_end, version)
+            result = logic.adjust_row(
+                conn, row_id, new_start, new_end, version,
+                expect_data_rev=data_rev,
+            )
     except logic.Conflict as e:
-        # 原字幕读出后被改过：拒绝保存（事务已回滚），提示刷新
+        # 原字幕读出后被改过，或整批换段后旧页面提交：拒绝保存（事务已回滚），提示刷新
         conn = db.connect()
         try:
             ctx = logic.get_edit_context(conn, row_id)
         finally:
             conn.close()
         if ctx is None:
-            return redirect("/rows", err=str(e))
+            # 换段后旧行 id 已不存在：同样以 409 拒绝并明确提示刷新
+            return templates.TemplateResponse(
+                request,
+                "stale.html",
+                {"err": str(e)},
+                status_code=409,
+            )
         return templates.TemplateResponse(
             request, "edit.html", {"err": str(e), **ctx}, status_code=409
         )
@@ -174,11 +184,12 @@ def _read_upload(file: UploadFile) -> str:
 def upload_source(file: UploadFile):
     try:
         rows = csvio.parse_source(_read_upload(file))
-        with db.transaction() as conn:
-            logic.replace_source(conn, rows)
-            logic.rebuild_all(conn)
+        # 两阶段：场外重算不占写锁，期间校时保存照常；切换失败整体回滚、原数据不变
+        logic.replace_dataset(db.connect, new_source=rows)
     except csvio.CsvError as e:
         return redirect("/upload", err=f"原片字幕 CSV 未导入：{e}")
+    except Exception as e:  # 切换阶段任何失败：原选段/原校时继续有效
+        return redirect("/upload", err=f"原片字幕切换失败，仍沿用原数据：{e}")
     return redirect("/upload", msg=f"已导入原片字幕 {len(rows)} 条，成片行已全量重算")
 
 
@@ -186,11 +197,12 @@ def upload_source(file: UploadFile):
 def upload_selections(file: UploadFile):
     try:
         rows = csvio.parse_selections(_read_upload(file))
-        with db.transaction() as conn:
-            logic.replace_selections(conn, rows)
-            logic.rebuild_all(conn)
+        # 两阶段：场外构建新选段与成片行（不阻塞校时），短事务原子切换
+        logic.replace_dataset(db.connect, new_selections=rows)
     except csvio.CsvError as e:
         return redirect("/upload", err=f"选段 CSV 未导入：{e}")
+    except Exception as e:  # 换段失败：继续用原选段，期间已保存的校时仍然有效
+        return redirect("/upload", err=f"选段切换失败，继续沿用原选段：{e}")
     return redirect("/upload", msg=f"已导入选段 {len(rows)} 段，成片行已全量重算")
 
 
@@ -203,10 +215,7 @@ def load_sample():
             sel = csvio.parse_selections(f.read())
     except (OSError, csvio.CsvError) as e:
         return redirect("/upload", err=f"样例载入失败：{e}")
-    with db.transaction() as conn:
-        logic.replace_source(conn, src)
-        logic.replace_selections(conn, sel)
-        logic.rebuild_all(conn)
+    logic.replace_dataset(db.connect, new_source=src, new_selections=sel)
     return redirect("/rows", msg="已载入内置样例（含重复选段），可直接校时")
 
 
